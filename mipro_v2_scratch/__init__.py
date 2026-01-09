@@ -15,17 +15,21 @@ Author: Standalone implementation
 """
 
 from .mipro_optimizer import MIPROv2
-from .llm_client import LLMClient
-from .module import Module, Predictor, Signature
-from .example import Example
+from .llm_client import LLMClient, GeminiClient, OpenAIClient
+from .module import Module, Predictor, Signature, SimplePredictor
+from .example import Example, Prediction
 
 __all__ = [
     "MIPROv2",
     "LLMClient",
+    "GeminiClient",
+    "OpenAIClient",
     "Module",
     "Predictor",
     "Signature",
+    "SimplePredictor",
     "Example",
+    "Prediction",
 ]
 
 __version__ = "2.0.0"
