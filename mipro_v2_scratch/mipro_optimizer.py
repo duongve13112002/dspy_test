@@ -29,21 +29,29 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # ============================================================================
 
+# Auto settings based on paper recommendations
+# Paper uses N=10-70 candidates and 20-50 trials depending on task complexity
 AUTO_RUN_SETTINGS = {
-    "light": {"num_candidates": 6, "val_size": 100, "num_trials": 15},
-    "medium": {"num_candidates": 12, "val_size": 300, "num_trials": 30},
-    "heavy": {"num_candidates": 18, "val_size": 1000, "num_trials": 50},
+    "light": {"num_candidates": 10, "val_size": 100, "num_trials": 20},
+    "medium": {"num_candidates": 30, "val_size": 300, "num_trials": 35},  # Most common in paper
+    "heavy": {"num_candidates": 50, "val_size": 1000, "num_trials": 50},
 }
 
-# Prompting tips for instruction generation
+# Prompting tips for instruction generation (Exact from paper - Appendix C.2)
+# These tips are sampled randomly during instruction proposal to increase diversity
 INSTRUCTION_TIPS = {
     "none": "",
     "creative": "Don't be afraid to be creative when creating the new instruction!",
     "simple": "Keep the instruction clear and concise.",
-    "descriptive": "Make sure your instruction is very informative and descriptive.",
-    "high_stakes": "The instruction should include a high stakes scenario!",
-    "persona": 'Include a relevant persona (e.g., "You are an expert...").',
+    "description": "Make sure your instruction is very informative and descriptive.",
+    "high_stakes": "The instruction should include a high stakes scenario in which the LM must solve the task!",
+    "persona": "Provide the LM with a persona that is relevant to the task (ie. 'You are a...')",
 }
+
+# Default N values from paper Table 4 (task-dependent)
+# For 0-Shot MIPRO: ranges 15-70 depending on task
+# For MIPRO with demos: ranges 10-70 depending on task
+# Common defaults: 30 for most tasks
 
 
 # ============================================================================

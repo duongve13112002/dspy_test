@@ -528,15 +528,60 @@ TPE là một biến thể của Bayesian Optimization đặc biệt hiệu qu�
 
 ## 6. Tham số và Cấu hình
 
-### 6.1 Auto Modes
+### 6.1 Thông Số Chính Xác Từ Paper Gốc (arXiv:2406.11695)
+
+#### N - Số Lượng Instruction Candidates (Table 4)
+
+| Task | 0-Shot MIPRO | MIPRO (có demos) |
+|------|--------------|------------------|
+| HotPotQA | 60 | 30 |
+| HotPotQA Conditional | 35 | 30 |
+| Iris | 50 | 30 |
+| Heart Disease | 30 | 15 |
+| ScoNe | 70 | 70 |
+| HoVer | 15 | 10 |
+
+**Giá trị phổ biến**: 30 candidates cho hầu hết tasks
+
+#### K - Số Demo Sets
+- Paper không định nghĩa K riêng biệt
+- **N demo sets** được tạo cho mỗi module (cùng với N instructions)
+- Bayesian optimization chọn **1 demo set** từ N candidates trong mỗi trial
+
+#### TIPS Chính Xác (Appendix C.2)
+
+```python
+TIPS = {
+    "none": "",  # Không có tip
+    "creative": "Don't be afraid to be creative when creating the new instruction!",
+    "simple": "Keep the instruction clear and concise.",
+    "description": "Make sure your instruction is very informative and descriptive.",
+    "high_stakes": "The instruction should include a high stakes scenario in which the LM must solve the task!",
+    "persona": "Provide the LM with a persona that is relevant to the task (ie. 'You are a...')"
+}
+```
+
+**Tips được chọn ngẫu nhiên** trong mỗi lần generate instruction để tạo diversity.
+
+#### Các Hyperparameters Khác
+
+| Parameter | Giá Trị | Ghi chú |
+|-----------|---------|---------|
+| Proposer LM temperature | 0.7 | Default, có thể optimize |
+| Task LM temperature | 0.7 | Default |
+| top_p sampling | 1.0 | Full sampling |
+| Optimization trials | 20-50 | Tùy task complexity |
+| Minibatch size B | Variable | Tùy dataset size |
+
+### 6.2 Auto Modes (Implementation)
 
 | Mode | num_candidates | val_size | num_trials | Use case |
 |------|---------------|----------|------------|----------|
-| `light` | 6 | 100 | 15 | Testing, small datasets |
-| `medium` | 12 | 300 | 30 | Balanced quality/cost |
-| `heavy` | 18 | 1000 | 50 | Production, large datasets |
+| `light` | 10 | 100 | 20 | Testing, small datasets |
+| `medium` | 30 | 300 | 35 | Balanced quality/cost (recommended) |
+| `heavy` | 50 | 1000 | 50 | Production, large datasets |
 
-### 6.2 Manual Configuration
+### 6.3 Manual Configuration
 
 ```python
 optimizer = MIPROv2(
@@ -553,7 +598,7 @@ optimizer = MIPROv2(
 )
 ```
 
-### 6.3 Compile Options
+### 6.4 Compile Options
 
 ```python
 best_program, score = optimizer.compile(
