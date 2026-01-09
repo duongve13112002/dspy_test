@@ -313,8 +313,331 @@ Training Data:
 
 ### 4.2 Step 2: Propose Instructions
 
-#### Mục đích
-Sinh ra **nhiều instruction candidates đa dạng** bằng cách sử dụng LLM với các context khác nhau.
+#### 4.2.1 Dataset Summarization (Iterative Observation)
+
+Trước khi tạo instructions, MIPRO cần hiểu dataset. Quá trình này sử dụng **iterative observation** với cơ chế **"COMPLETE"**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DATASET SUMMARIZATION PROCESS                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Training Data (500 examples)                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ Ex1, Ex2, Ex3, ... Ex500                                        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ BATCH 1 (Ex1-Ex10):                                             │   │
+│  │                                                                 │   │
+│  │   Prompt: "Given examples, write observations about trends..."  │   │
+│  │                                                                 │   │
+│  │   LLM Output: "The dataset contains QA pairs about math.        │   │
+│  │               Questions are short (5-10 words).                 │   │
+│  │               Answers are typically single numbers."            │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ BATCH 2 (Ex11-Ex20):                                            │   │
+│  │                                                                 │   │
+│  │   Prompt: "Here are more examples + prior observations.         │   │
+│  │           Add new observations or say 'COMPLETE'."              │   │
+│  │                                                                 │   │
+│  │   LLM Output: "Also noticed: some questions involve            │   │
+│  │               percentages and fractions. Answer format          │   │
+│  │               is consistent (just the number, no units)."       │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ BATCH 3 (Ex21-Ex30):                                            │   │
+│  │                                                                 │   │
+│  │   LLM Output: "COMPLETE"  ← Không có gì mới để thêm             │   │
+│  │   skips = 1                                                     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ BATCH 4-7: LLM tiếp tục output "COMPLETE"                       │   │
+│  │   skips = 2, 3, 4, 5                                            │   │
+│  │                                                                 │   │
+│  │   Khi skips >= 5 → DỪNG iterating                               │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ FINAL STEP: Summarize observations                              │   │
+│  │                                                                 │   │
+│  │   Prompt: "Summarize these observations into 2-3 sentences"     │   │
+│  │                                                                 │   │
+│  │   Output: "This dataset contains math QA pairs where users      │   │
+│  │           ask calculation questions. Answers are short          │   │
+│  │           numeric values, typically 1-3 digits."                │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Cơ chế "COMPLETE" chi tiết
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     CƠ CHẾ "COMPLETE" STOPPING                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  MỤC ĐÍCH:                                                              │
+│  • Tiết kiệm LLM calls (không cần xem hết 500 examples)                │
+│  • Dừng khi đã hiểu đủ về dataset                                       │
+│  • Tránh over-summarization (thông tin dư thừa)                        │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  ALGORITHM:                                                             │
+│                                                                         │
+│  skips = 0                                                              │
+│  max_calls = 10  # Giới hạn tối đa                                      │
+│                                                                         │
+│  For each batch:                                                        │
+│      response = LLM(examples + prior_observations)                      │
+│                                                                         │
+│      If response starts with "COMPLETE":                                │
+│          skips += 1                                                     │
+│          If skips >= 5:                                                 │
+│              BREAK  ← Dừng vòng lặp                                     │
+│          Continue  ← Bỏ qua batch này, không thêm vào observations      │
+│      Else:                                                              │
+│          observations += response                                       │
+│          skips = 0  ← Reset counter (có observation mới)                │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  TẠI SAO 5 LẦN LIÊN TIẾP?                                               │
+│                                                                         │
+│  • 1 lần "COMPLETE" có thể là do batch đó tương tự batch trước          │
+│  • 5 lần liên tiếp = LLM thực sự đã thấy đủ patterns                   │
+│  • Đảm bảo robustness (tránh dừng sớm do 1 batch "boring")             │
+│                                                                         │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  VÍ DỤ THỰC TẾ:                                                         │
+│                                                                         │
+│  Batch 1: "Questions are about math..." → observations += this         │
+│  Batch 2: "Also has geography questions" → observations += this        │
+│  Batch 3: "COMPLETE" → skips=1, continue                               │
+│  Batch 4: "Found science questions too!" → observations += this        │
+│           skips=0 (reset vì có observation mới)                        │
+│  Batch 5: "COMPLETE" → skips=1                                         │
+│  Batch 6: "COMPLETE" → skips=2                                         │
+│  Batch 7: "COMPLETE" → skips=3                                         │
+│  Batch 8: "COMPLETE" → skips=4                                         │
+│  Batch 9: "COMPLETE" → skips=5 → DỪNG!                                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Prompts chính xác từ DSPy
+
+```python
+# Prompt cho batch đầu tiên
+OBSERVATION_PROMPT = """
+Given several examples from a dataset please write observations
+about trends that hold for most or all of the samples.
+
+Some areas you may consider in your observations:
+topics, content, syntax, conciseness, etc.
+
+It will be useful to make an educated guess as to the nature of
+the task this dataset will enable. Don't be afraid to be creative.
+
+Examples:
+{examples}
+
+Observations:
+"""
+
+# Prompt cho các batch tiếp theo
+OBSERVATION_WITH_PRIOR_PROMPT = """
+Given several examples from a dataset please write observations
+about trends that hold for most or all of the samples.
+
+I will also provide you with a few observations I have already made.
+Please add your own observations or if you feel the observations
+are comprehensive say 'COMPLETE'.
+
+Some areas you may consider: topics, content, syntax, conciseness, etc.
+
+Examples:
+{examples}
+
+Prior observations:
+{prior_observations}
+
+Additional observations (or 'COMPLETE' if nothing to add):
+"""
+
+# Prompt để tổng hợp cuối cùng
+SUMMARIZE_PROMPT = """
+Given a series of observations I have made about my dataset,
+please summarize them into a brief 2-3 sentence summary
+which highlights only the most important details.
+
+Observations:
+{observations}
+
+Summary (2-3 sentences):
+"""
+```
+
+#### 4.2.2 Program Description (Program-Aware Proposal)
+
+MIPRO phân tích **code của program** để hiểu cấu trúc:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PROGRAM DESCRIPTION PROCESS                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  INPUT: Program Source Code                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  class MathSolver(Module):                                      │   │
+│  │      def __init__(self):                                        │   │
+│  │          self.reason = Predictor("question -> reasoning")       │   │
+│  │          self.answer = Predictor("question, reasoning -> ans")  │   │
+│  │                                                                 │   │
+│  │      def forward(self, question):                               │   │
+│  │          r = self.reason(question=question)                     │   │
+│  │          a = self.answer(question=question, reasoning=r)        │   │
+│  │          return a                                               │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ STEP 1: Describe Program                                        │   │
+│  │                                                                 │   │
+│  │   Prompt: "Describe what task this program solves and how       │   │
+│  │           it appears to work"                                   │   │
+│  │                                                                 │   │
+│  │   Output: "This program solves math problems using a two-stage  │   │
+│  │           approach: first generating step-by-step reasoning,    │   │
+│  │           then extracting the final answer from the reasoning." │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                         │                                               │
+│                         ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ STEP 2: Describe Each Module                                    │   │
+│  │                                                                 │   │
+│  │   Module 0: Predictor(question) -> reasoning                    │   │
+│  │   Description: "Generates step-by-step reasoning to solve       │   │
+│  │                 the math problem"                               │   │
+│  │                                                                 │   │
+│  │   Module 1: Predictor(question, reasoning) -> answer            │   │
+│  │   Description: "Extracts the final numeric answer from the      │   │
+│  │                 reasoning provided"                             │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 4.2.3 Full Instruction Proposal Prompt
+
+Tất cả components được kết hợp thành **Grounded Proposal Prompt**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              COMPLETE INSTRUCTION PROPOSAL PROMPT                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Use the information below to learn about a task that we are trying     │
+│  to solve using calls to an LM, then generate a new instruction that    │
+│  will be used to prompt a Language Model to better solve the task.      │
+│                                                                         │
+│  ═══════════════════════════════════════════════════════════════════   │
+│                                                                         │
+│  DATASET SUMMARY:                                                       │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  "This dataset contains math word problems where users ask      │   │
+│  │   calculation questions. Answers are short numeric values."     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  PROGRAM CODE:                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  class MathSolver(Module):                                      │   │
+│  │      def __init__(self):                                        │   │
+│  │          self.reason = Predictor("question -> reasoning")       │   │
+│  │          self.answer = Predictor("question, reasoning -> ans")  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  PROGRAM DESCRIPTION:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  "This program uses two-stage reasoning to solve math problems" │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  MODULE:                                                                │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Predictor(question) -> reasoning                               │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  MODULE DESCRIPTION:                                                    │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  "Generates step-by-step reasoning to solve the math problem"   │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  TASK DEMO(S):                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Question: What is 15% of 200?                                  │   │
+│  │  Reasoning: To find 15% of 200, I multiply: 200 × 0.15 = 30    │   │
+│  │  ---                                                            │   │
+│  │  Question: What is 25 + 37?                                     │   │
+│  │  Reasoning: Adding 25 and 37: 25 + 37 = 62                     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  PREVIOUS INSTRUCTIONS:                                                 │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  - Score 65%: "Solve the math problem"                          │   │
+│  │  - Score 72%: "Think step by step to solve the problem"         │   │
+│  │  - Score 68%: "Calculate the answer carefully"                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  BASIC INSTRUCTION:                                                     │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  "Given the question, provide step-by-step reasoning"           │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  TIP:                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  "Make sure your instruction is very informative and            │   │
+│  │   descriptive."                                                 │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ═══════════════════════════════════════════════════════════════════   │
+│                                                                         │
+│  PROPOSED INSTRUCTION:                                                  │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  (LLM generates new instruction here based on all context)      │   │
+│  │                                                                 │   │
+│  │  Example output:                                                │   │
+│  │  "You are a math tutor. Given a math problem, break it down    │   │
+│  │   into clear steps. Show your work by explaining each          │   │
+│  │   calculation. Be precise with numbers and operations."        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Mục đích của từng component
+
+| Component | Mục đích | Khi nào dùng |
+|-----------|----------|--------------|
+| **Dataset Summary** | Giúp LLM hiểu đặc điểm data | `data_aware=True` |
+| **Program Code** | Hiểu cấu trúc chương trình | `program_aware=True` |
+| **Program Description** | Hiểu task tổng thể | `program_aware=True` |
+| **Module Description** | Hiểu vai trò module cụ thể | `program_aware=True` |
+| **Task Demos** | Cung cấp ví dụ cụ thể | `fewshot_aware=True` |
+| **Previous Instructions** | Tránh lặp lại, học từ failures | `use_instruct_history=True` (50% random) |
+| **Basic Instruction** | Baseline để improve upon | Luôn có |
+| **Tip** | Hướng dẫn style của instruction | `tip_aware=True` (random tip) |
 
 #### "Grounded" Proposal
 
