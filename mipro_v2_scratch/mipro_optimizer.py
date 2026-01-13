@@ -16,6 +16,7 @@ This implementation follows the paper and DSPy library closely.
 import random
 import logging
 import inspect
+import sys
 from copy import deepcopy
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
@@ -27,6 +28,124 @@ from .example import Example, Prediction
 from .module import Module, Predictor, Signature
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+
+def setup_logging(
+    level: str = "INFO",
+    format_style: str = "detailed",
+    log_file: Optional[str] = None,
+) -> None:
+    """
+    Setup logging for MIPROv2 optimization process.
+
+    Args:
+        level: Log level ("DEBUG", "INFO", "WARNING", "ERROR")
+        format_style: "simple", "detailed", or "minimal"
+        log_file: Optional path to log file
+
+    Example:
+        ```python
+        from mipro_v2_scratch.mipro_optimizer import setup_logging
+
+        # Detailed logging to console
+        setup_logging(level="INFO", format_style="detailed")
+
+        # Debug logging to file
+        setup_logging(level="DEBUG", log_file="optimization.log")
+        ```
+    """
+    formats = {
+        "minimal": "%(message)s",
+        "simple": "[%(levelname)s] %(message)s",
+        "detailed": "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+    }
+
+    log_format = formats.get(format_style, formats["simple"])
+
+    # Configure root logger for mipro_v2_scratch
+    mipro_logger = logging.getLogger("mipro_v2_scratch")
+    mipro_logger.setLevel(getattr(logging, level.upper()))
+
+    # Clear existing handlers
+    mipro_logger.handlers.clear()
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter(log_format, datefmt="%H:%M:%S"))
+    mipro_logger.addHandler(console_handler)
+
+    # File handler if specified
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        mipro_logger.addHandler(file_handler)
+
+
+class OptimizationLogger:
+    """
+    Structured logger for tracking optimization progress.
+
+    Provides detailed logging with progress bars and structured output.
+    """
+
+    def __init__(self, verbose: bool = True, log_file: Optional[str] = None):
+        self.verbose = verbose
+        self.log_file = log_file
+        self.logs: List[Dict[str, Any]] = []
+        self._trial_start_time = None
+
+        if verbose:
+            setup_logging(level="INFO", format_style="simple", log_file=log_file)
+        else:
+            setup_logging(level="WARNING", format_style="simple", log_file=log_file)
+
+    def log_step(self, step: str, message: str, data: Optional[Dict] = None):
+        """Log a step in the optimization process."""
+        entry = {
+            "step": step,
+            "message": message,
+            "data": data or {},
+        }
+        self.logs.append(entry)
+
+        if self.verbose:
+            logger.info(f"[{step}] {message}")
+            if data:
+                for key, value in data.items():
+                    if isinstance(value, str) and len(value) > 100:
+                        value = value[:100] + "..."
+                    logger.info(f"  {key}: {value}")
+
+    def log_trial(self, trial_num: int, total: int, score: float, params: Dict):
+        """Log a trial result."""
+        if self.verbose:
+            progress = f"[{trial_num}/{total}]"
+            logger.info(f"Trial {progress} Score: {score:.2f}%")
+
+    def log_candidate(self, pred_name: str, candidate_num: int, instruction: str):
+        """Log a generated instruction candidate."""
+        if self.verbose:
+            preview = instruction[:60] + "..." if len(instruction) > 60 else instruction
+            logger.info(f"  [{pred_name}] Candidate {candidate_num}: {preview}")
+
+    def log_demo_set(self, pred_idx: int, set_num: int, num_demos: int):
+        """Log a demo set creation."""
+        if self.verbose:
+            logger.info(f"  Predictor {pred_idx}: Demo set {set_num} ({num_demos} demos)")
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of the optimization logs."""
+        return {
+            "total_steps": len(self.logs),
+            "logs": self.logs,
+        }
 
 # ============================================================================
 # CONSTANTS (Aligned with DSPy library)

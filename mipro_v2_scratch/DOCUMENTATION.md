@@ -878,6 +878,168 @@ Returns: `(optimized_program, best_score)`
 
 ---
 
+## Save/Load Optimized Prompts
+
+Lưu và load prompt đã tối ưu vào/từ file JSON.
+
+### Save Optimized Module
+
+```python
+# Sau khi tối ưu
+optimized_module, score = optimizer.compile(program=module, trainset=trainset)
+
+# Lưu vào file JSON
+optimized_module.save("optimized_prompts.json")
+
+# Lưu không kèm metadata (chỉ prompts và demos)
+optimized_module.save("prompts_only.json", include_metadata=False)
+```
+
+### Load Optimized Module
+
+```python
+# Cách 1: Load vào module đã có
+module = MathSolver()
+module.set_llm(lm)
+module.load("optimized_prompts.json")
+
+# Cách 2: Load và sử dụng ngay
+module = MathSolver()
+module.set_llm(lm).load("optimized_prompts.json")
+result = module(question="What is 5+5?")
+```
+
+### JSON File Structure
+
+```json
+{
+  "version": "2.0.0",
+  "module_class": "MathSolver",
+  "predictors": {
+    "solve": {
+      "signature": {
+        "input_fields": [
+          {"name": "question", "description": "math question", "prefix": "Question:", "field_type": "input"}
+        ],
+        "output_fields": [
+          {"name": "answer", "description": "numerical answer", "prefix": "Answer:", "field_type": "output"}
+        ],
+        "instructions": "You are an expert math tutor. Solve the problem step by step..."
+      },
+      "demos": [
+        {"question": "What is 2+2?", "answer": "4"},
+        {"question": "What is 10-3?", "answer": "7"}
+      ],
+      "demo_input_keys": [["question"], ["question"]]
+    }
+  },
+  "metadata": {
+    "compiled": true,
+    "score": 95.0,
+    "trial_logs": {...}
+  }
+}
+```
+
+### Get Optimized State Summary
+
+```python
+# Xem tóm tắt state đã tối ưu
+state = optimized_module.get_optimized_state()
+print(f"Score: {state['score']}%")
+
+for name, info in state["predictors"].items():
+    print(f"\nPredictor: {name}")
+    print(f"  Instruction: {info['instruction'][:80]}...")
+    print(f"  Demos: {info['num_demos']}")
+```
+
+---
+
+## Logging Configuration
+
+Cấu hình logging để theo dõi quá trình tối ưu.
+
+### Basic Setup
+
+```python
+from mipro_v2_scratch import setup_logging, MIPROv2
+
+# Hiển thị log chi tiết trên console
+setup_logging(level="INFO", format_style="detailed")
+
+# Chỉ hiển thị warnings
+setup_logging(level="WARNING")
+
+# Log ra file
+setup_logging(level="DEBUG", log_file="optimization.log")
+```
+
+### Log Levels
+
+| Level | Description |
+|-------|-------------|
+| `DEBUG` | Tất cả thông tin chi tiết (prompts, responses, etc.) |
+| `INFO` | Tiến trình chính (steps, trials, scores) |
+| `WARNING` | Chỉ cảnh báo và errors |
+| `ERROR` | Chỉ errors |
+
+### Format Styles
+
+| Style | Output |
+|-------|--------|
+| `minimal` | `Message only` |
+| `simple` | `[INFO] Message` |
+| `detailed` | `[10:30:45] [INFO] mipro_v2_scratch: Message` |
+
+### Verbose Parameter
+
+```python
+# MIPROv2 có parameter verbose
+optimizer = MIPROv2(
+    metric=accuracy,
+    llm=lm,
+    verbose=True,  # Hiển thị progress
+)
+
+# Hoặc tắt hoàn toàn
+optimizer = MIPROv2(
+    metric=accuracy,
+    llm=lm,
+    verbose=False,  # Chỉ hiển thị warnings/errors
+)
+```
+
+### Complete Example với Logging
+
+```python
+from mipro_v2_scratch import (
+    LLM, MIPROv2, Example, Module, Predictor, Signature,
+    setup_logging
+)
+
+# Setup logging chi tiết
+setup_logging(level="INFO", format_style="simple", log_file="my_optimization.log")
+
+# ... định nghĩa module và trainset ...
+
+# Optimizer với verbose
+optimizer = MIPROv2(
+    metric=accuracy,
+    llm=lm,
+    verbose=True,  # Hiển thị progress
+)
+
+# Optimize - logs sẽ được ghi ra console và file
+optimized, score = optimizer.compile(program=module, trainset=trainset)
+
+# Lưu kết quả
+optimized.save("best_prompts.json")
+print(f"Saved! Score: {score}%")
+```
+
+---
+
 ## So Sánh với DSPy
 
 | Feature | DSPy | Standalone MIPROv2 |

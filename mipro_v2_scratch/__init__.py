@@ -56,7 +56,7 @@ from .module import (
 from .example import Example, Prediction
 
 # Main optimizer
-from .mipro_optimizer import MIPROv2
+from .mipro_optimizer import MIPROv2, setup_logging, OptimizationLogger
 
 __all__ = [
     # LLM Clients
@@ -82,6 +82,9 @@ __all__ = [
     "Prediction",
     # Optimizer
     "MIPROv2",
+    # Logging utilities
+    "setup_logging",
+    "OptimizationLogger",
 ]
 
 __version__ = "2.0.0"

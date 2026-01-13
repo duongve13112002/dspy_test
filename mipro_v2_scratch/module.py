@@ -37,6 +37,25 @@ class Field:
         if self.prefix is None:
             self.prefix = f"{self.name.replace('_', ' ').title()}:"
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "prefix": self.prefix,
+            "field_type": self.field_type,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Field":
+        """Create Field from dictionary."""
+        return cls(
+            name=data["name"],
+            description=data.get("description", ""),
+            prefix=data.get("prefix"),
+            field_type=data.get("field_type", "input"),
+        )
+
 
 @dataclass
 class Signature:
@@ -142,6 +161,23 @@ class Signature:
         inputs = ", ".join(f.name for f in self.input_fields)
         outputs = ", ".join(f.name for f in self.output_fields)
         return f"Signature({inputs} -> {outputs})"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "input_fields": [f.to_dict() for f in self.input_fields],
+            "output_fields": [f.to_dict() for f in self.output_fields],
+            "instructions": self.instructions,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Signature":
+        """Create Signature from dictionary."""
+        return cls(
+            input_fields=[Field.from_dict(f) for f in data.get("input_fields", [])],
+            output_fields=[Field.from_dict(f) for f in data.get("output_fields", [])],
+            instructions=data.get("instructions", ""),
+        )
 
 
 class Predictor:
@@ -397,6 +433,185 @@ class Module:
     def deepcopy(self) -> "Module":
         """Create a deep copy."""
         return deepcopy(self)
+
+    def save(self, path: str, include_metadata: bool = True) -> None:
+        """
+        Save optimized prompts and demos to a JSON file.
+
+        Args:
+            path: Path to save the JSON file
+            include_metadata: Include optimization metadata (score, trial logs)
+
+        Example:
+            ```python
+            optimized_module.save("optimized_prompts.json")
+            ```
+        """
+        data = {
+            "version": "2.0.0",
+            "module_class": self.__class__.__name__,
+            "predictors": {},
+        }
+
+        # Save each predictor's state
+        for name, pred in self.named_predictors():
+            pred_data = {
+                "signature": pred.signature.to_dict(),
+                "demos": [
+                    demo.to_dict() if hasattr(demo, 'to_dict') else dict(demo._data)
+                    for demo in pred.demos
+                ],
+                "demo_input_keys": [
+                    list(demo._input_keys) if hasattr(demo, '_input_keys') else []
+                    for demo in pred.demos
+                ],
+            }
+            data["predictors"][name] = pred_data
+
+        # Include metadata if available
+        if include_metadata:
+            data["metadata"] = {
+                "compiled": getattr(self, '_compiled', False),
+                "score": getattr(self, '_score', None),
+                "trial_logs": getattr(self, '_trial_logs', None),
+            }
+
+        # Write to file
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"Saved optimized module to {path}")
+
+    def load(self, path: str) -> "Module":
+        """
+        Load optimized prompts and demos from a JSON file.
+
+        Args:
+            path: Path to the JSON file
+
+        Returns:
+            Self for chaining
+
+        Example:
+            ```python
+            module.load("optimized_prompts.json")
+            # or
+            module = MyModule()
+            module.set_llm(lm)
+            module.load("optimized_prompts.json")
+            ```
+        """
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Load each predictor's state
+        for name, pred_data in data.get("predictors", {}).items():
+            if name not in self._predictors:
+                logger.warning(f"Predictor '{name}' not found in module, skipping")
+                continue
+
+            pred = self._predictors[name]
+
+            # Load signature (mainly instructions)
+            if "signature" in pred_data:
+                sig_data = pred_data["signature"]
+                pred.signature = Signature.from_dict(sig_data)
+
+            # Load demos
+            if "demos" in pred_data:
+                pred.demos = []
+                demo_input_keys = pred_data.get("demo_input_keys", [])
+
+                for i, demo_dict in enumerate(pred_data["demos"]):
+                    demo = Example(**demo_dict)
+                    # Restore input keys if available
+                    if i < len(demo_input_keys) and demo_input_keys[i]:
+                        demo.with_inputs(*demo_input_keys[i])
+                    pred.demos.append(demo)
+
+        # Load metadata if available
+        if "metadata" in data:
+            self._compiled = data["metadata"].get("compiled", True)
+            self._score = data["metadata"].get("score")
+            self._trial_logs = data["metadata"].get("trial_logs")
+
+        logger.info(f"Loaded optimized module from {path}")
+        return self
+
+    @classmethod
+    def load_state(cls, path: str, llm=None) -> "Module":
+        """
+        Class method to create a new instance and load state.
+
+        Note: This creates a base Module, not a subclass instance.
+        For subclasses, use instance.load() instead.
+
+        Args:
+            path: Path to the JSON file
+            llm: Optional LLM client to set
+
+        Returns:
+            New Module instance with loaded state
+        """
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Create a simple module with predictors from the saved data
+        module = cls()
+
+        for name, pred_data in data.get("predictors", {}).items():
+            sig = Signature.from_dict(pred_data["signature"])
+            pred = Predictor(sig, llm=llm)
+
+            # Load demos
+            demo_input_keys = pred_data.get("demo_input_keys", [])
+            for i, demo_dict in enumerate(pred_data.get("demos", [])):
+                demo = Example(**demo_dict)
+                if i < len(demo_input_keys) and demo_input_keys[i]:
+                    demo.with_inputs(*demo_input_keys[i])
+                pred.demos.append(demo)
+
+            module._predictors[name] = pred
+            object.__setattr__(module, name, pred)
+
+        # Load metadata
+        if "metadata" in data:
+            module._compiled = data["metadata"].get("compiled", True)
+            module._score = data["metadata"].get("score")
+            module._trial_logs = data["metadata"].get("trial_logs")
+
+        return module
+
+    def get_optimized_state(self) -> Dict[str, Any]:
+        """
+        Get a summary of the optimized state.
+
+        Returns:
+            Dictionary with instructions and demo counts for each predictor
+
+        Example:
+            ```python
+            state = optimized_module.get_optimized_state()
+            for name, info in state["predictors"].items():
+                print(f"{name}: {info['instruction'][:50]}...")
+                print(f"  Demos: {info['num_demos']}")
+            ```
+        """
+        return {
+            "compiled": getattr(self, '_compiled', False),
+            "score": getattr(self, '_score', None),
+            "predictors": {
+                name: {
+                    "instruction": pred.signature.instructions,
+                    "num_demos": len(pred.demos),
+                    "demo_preview": [
+                        {k: str(v)[:100] for k, v in demo._data.items()}
+                        for demo in pred.demos[:2]  # First 2 demos as preview
+                    ],
+                }
+                for name, pred in self.named_predictors()
+            },
+        }
 
 
 class SimplePredictor(Module):
