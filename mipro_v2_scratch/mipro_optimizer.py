@@ -523,8 +523,17 @@ class DemonstrationBootstrapper:
         k = min(self.max_labeled_demos, len(trainset))
         sampled = rng.sample(trainset, k)
 
+        # Mark as augmented so they're included in formatting
+        labeled_demos = []
+        for ex in sampled:
+            demo = ex.copy() if hasattr(ex, 'copy') else Example(**ex._data)
+            demo.augmented = True  # Mark so it's included in context
+            if hasattr(ex, '_input_keys'):
+                demo._input_keys = ex._input_keys.copy()
+            labeled_demos.append(demo)
+
         # Same demos for all predictors
-        return {i: list(sampled) for i in range(len(program.predictors()))}
+        return {i: list(labeled_demos) for i in range(len(program.predictors()))}
 
     def _bootstrap_demos(
         self,
@@ -777,8 +786,13 @@ PROPOSED INSTRUCTION:"""
         # Format up to num_demos_in_context demos
         demo_strs = []
         for demo in demos[:self.num_demos_in_context]:
-            if not hasattr(demo, 'get') or 'augmented' not in demo:
+            # Include demo if it has the augmented flag or has required fields
+            has_augmented = hasattr(demo, 'augmented') or (hasattr(demo, '_data') and 'augmented' in demo._data)
+            has_fields = any(field.name in demo for field in predictor.signature.input_fields)
+
+            if not has_augmented and not has_fields:
                 continue
+
             parts = []
             for field in predictor.signature.input_fields:
                 if field.name in demo:
@@ -1392,6 +1406,15 @@ class MIPROv2:
         logger.info(f"OPTIMIZATION COMPLETE - Best Score: {best_score:.2f}%")
         logger.info("="*50)
 
+        # Log final configuration
+        if self.verbose:
+            logger.info("\nOptimized Configuration:")
+            for name, pred in best_program.named_predictors():
+                logger.info(f"  [{name}]")
+                instr_preview = pred.signature.instructions[:80] + "..." if len(pred.signature.instructions) > 80 else pred.signature.instructions
+                logger.info(f"    Instruction: {instr_preview}")
+                logger.info(f"    Demos: {len(pred.demos)} examples")
+
         return best_program, best_score
 
     def _prepare_datasets(
@@ -1406,6 +1429,14 @@ class MIPROv2:
         if valset is None:
             if len(trainset) < 2:
                 raise ValueError("Need at least 2 examples for auto-split")
+
+            # Warn for small datasets
+            if len(trainset) < 20:
+                logger.warning(
+                    f"Small dataset ({len(trainset)} examples). "
+                    f"Recommend 50+ examples for better optimization. "
+                    f"With auto-split, only {max(1, int(len(trainset) * 0.2))} examples will be used for training."
+                )
 
             # DSPy style split: last 80% for val, first 20% for train
             valset_size = min(1000, max(1, int(len(trainset) * 0.80)))
