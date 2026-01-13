@@ -503,9 +503,11 @@ class DemonstrationBootstrapper:
                     program, trainset_shuffled, rng
                 )
 
-            # Add to candidates
+            # Add to candidates and log
             for pred_idx, demos in demos_per_pred.items():
                 demo_candidates[pred_idx].append(demos)
+                num_augmented = sum(1 for d in demos if getattr(d, 'augmented', False) or (hasattr(d, '_data') and d._data.get('augmented', False)))
+                logger.info(f"    Predictor {pred_idx}: {len(demos)} demos ({num_augmented} bootstrapped)")
 
         return demo_candidates
 
@@ -519,15 +521,22 @@ class DemonstrationBootstrapper:
         trainset: List[Example],
         rng: random.Random,
     ) -> Dict[int, List[Example]]:
-        """Create demo sets from random labeled samples."""
+        """
+        Create demo sets from random labeled samples.
+
+        NOTE: In DSPy, labeled demos do NOT have 'augmented' flag.
+        Only bootstrapped demos (from successful traces) have augmented=True.
+        Labeled demos are used directly in predictor.demos but not shown
+        during instruction proposal (which only shows augmented demos).
+        """
         k = min(self.max_labeled_demos, len(trainset))
         sampled = rng.sample(trainset, k)
 
-        # Mark as augmented so they're included in formatting
+        # Copy demos WITHOUT augmented flag (matches DSPy LabeledFewShot behavior)
         labeled_demos = []
         for ex in sampled:
             demo = ex.copy() if hasattr(ex, 'copy') else Example(**ex._data)
-            demo.augmented = True  # Mark so it's included in context
+            # Do NOT set augmented=True - only bootstrapped demos should have this
             if hasattr(ex, '_input_keys'):
                 demo._input_keys = ex._input_keys.copy()
             labeled_demos.append(demo)
@@ -769,7 +778,18 @@ PROPOSED INSTRUCTION:"""
         pred_idx: int,
         demo_set_i: int,
     ) -> str:
-        """Format demonstrations for proposal context."""
+        """
+        Format demonstrations for proposal context.
+
+        NOTE: Following DSPy behavior:
+        - demo_set_i == 0 always returns "No task demos provided" (zero-shot set)
+        - Only demos with 'augmented' flag are shown (bootstrapped demos)
+        - Labeled demos (without augmented) are used in optimization but not proposals
+        """
+        # DSPy: If using first demo set (zero-shot), no demos are shown
+        if demo_set_i == 0:
+            return "No task demos provided."
+
         if not demo_candidates or pred_idx not in demo_candidates:
             return "No task demos provided."
 
@@ -784,13 +804,16 @@ PROPOSED INSTRUCTION:"""
         predictor = program.predictors()[pred_idx]
 
         # Format up to num_demos_in_context demos
+        # DSPy only includes demos with 'augmented' flag in proposal context
         demo_strs = []
         for demo in demos[:self.num_demos_in_context]:
-            # Include demo if it has the augmented flag or has required fields
-            has_augmented = hasattr(demo, 'augmented') or (hasattr(demo, '_data') and 'augmented' in demo._data)
-            has_fields = any(field.name in demo for field in predictor.signature.input_fields)
+            # Check for augmented flag (DSPy: "augmented" in example.keys())
+            has_augmented = (
+                (hasattr(demo, 'augmented') and demo.augmented) or
+                (hasattr(demo, '_data') and demo._data.get('augmented', False))
+            )
 
-            if not has_augmented and not has_fields:
+            if not has_augmented:
                 continue
 
             parts = []
@@ -1022,8 +1045,15 @@ class BayesianOptimizer:
                         f"pred_{pred_idx}_demos",
                         list(range(len(demo_candidates[pred_idx])))
                     )
-                    predictor.demos = demo_candidates[pred_idx][demo_idx]
+                    selected_demos = demo_candidates[pred_idx][demo_idx]
+                    predictor.demos = selected_demos
                     params[f"pred_{pred_idx}_demos"] = demo_idx
+
+                    # Log demo set details
+                    if self.verbose:
+                        num_demos = len(selected_demos)
+                        num_augmented = sum(1 for d in selected_demos if getattr(d, 'augmented', False) or (hasattr(d, '_data') and d._data.get('augmented', False)))
+                        logger.debug(f"    Pred {pred_idx}: Demo set {demo_idx} ({num_demos} demos, {num_augmented} augmented)")
 
             # Evaluate
             if use_minibatch:
@@ -1413,7 +1443,9 @@ class MIPROv2:
                 logger.info(f"  [{name}]")
                 instr_preview = pred.signature.instructions[:80] + "..." if len(pred.signature.instructions) > 80 else pred.signature.instructions
                 logger.info(f"    Instruction: {instr_preview}")
-                logger.info(f"    Demos: {len(pred.demos)} examples")
+                num_demos = len(pred.demos)
+                num_augmented = sum(1 for d in pred.demos if getattr(d, 'augmented', False) or (hasattr(d, '_data') and d._data.get('augmented', False)))
+                logger.info(f"    Demos: {num_demos} total ({num_augmented} bootstrapped, {num_demos - num_augmented} labeled)")
 
         return best_program, best_score
 
